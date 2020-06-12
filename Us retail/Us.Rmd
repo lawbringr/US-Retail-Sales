@@ -1,0 +1,269 @@
+---
+title: "USA Retail Trade"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(gridExtra)
+library(doParallel)
+library(sarima)
+
+```
+
+```{r}
+data <- read_csv("Dataset/SeriesReport-Not Seasonally Adjusted Sales - Monthly (Millions of Dollars).csv")
+#view(data)
+names(data)[names(data) == "Value"] <- 'Retail sales'
+data$`Retail sales` <- data$'Retail sales'/1000
+data$Period <- as.Date(data$Period, format = "%d/%m/%Y")
+data <- na.omit(data)
+show(data)
+
+data_ad <- read_csv("Dataset/SeriesReport-Seasonally Adjusted Sales - Monthly (Millions of Dollars).csv")
+names(data_ad)[names(data_ad) == "Value"] <- 'Retail sales ad'
+data_ad$`Retail sales ad` = data_ad$`Retail sales ad`/1000
+data_ad$Period=as.Date(data_ad$Period, format = "%d/%m/%Y")
+data_ad <- na.omit(data_ad)
+show(data_ad)
+```
+# 1. Introduction
+Retail sales is the purchases of finished goods and services by consumers and businesses. These goods and services have made it to the end of the supply chain. The chain starts with the goods producer or provider and ends with the retailer.
+The U.S. Census Bureau measures retail sales with the monthly U.S. retail sales report.It reveals total sales, percentage change, and change in year-over-year sales.
+
+# 2. Exploratory Data Analysis
+These two charts show retail sales without seasonal adjustments and seasonally adjusted, respectively.
+
+
+```{r}
+summary(data$`Retail sales`)
+summary(data_ad$`Retail sales ad`)
+```
+
+```{r}
+show(data)
+p1 <- data %>% ggplot(aes(x = Period, y = `Retail sales`)) + geom_line() + geom_smooth() + ylab("Retail & food services sales (billon dollars)") + ylim(c(100,600)) + ggtitle("Retail Trade and Food Services: U.S. Total — \nNot Seasonally Adjusted Sales - Monthly [Billions of Dollars]") + theme_bw()
+show(p1)
+
+p2 <- data_ad %>% ggplot(aes(x = Period, y = `Retail sales ad`)) + geom_line() + geom_smooth() + ylab("Retail & food services sales (billon dollars)") + ylim(c(100,600)) + ggtitle("Retail Trade and Food Services: U.S. Total — \nSeasonally Adjusted Sales - Monthly [Billions of Dollars]") + theme_bw()
+print(p2)
+```
+
+Spectrum Analysis to compare Non Seasonally Adjusted Sales and Seasonally Adjusted Sales
+
+```{r}
+ts1 <- ts(data$`Retail sales`,start = 1992, frequency = 12)
+components.ts = decompose(ts1)
+plot(components.ts)
+ts2 <- ts(data_ad$`Retail sales ad`,start = 1992, frequency = 12)
+components.ts = decompose(ts2)
+plot(components.ts)
+spectrum(ts.union(ts1,ts2), spans = c(3,5,3), main = "Non Seasonally Adjusted retail sales(Black) \nand Seasonally adjusted retail sales(Red)")
+
+```
+
+- The x-axis units are cycles per year. 
+
+- As shown by the spectrum frequncy plot, the seasonally adjusted retail sales removes most of the signal at seasonal frequencies
+
+The ratio of the periodograms of the smoothed and unsmoothed time
+series is called the transfer function or frequency response
+function of the smoother.
+```{r}
+s <- spectrum(ts.union(ts1,ts2))
+y <- s$spec[,2]/s$spec[,1]
+print(y)
+result <- mean(y)
+print(result)
+data.frame(x=s$freq,y=s$spec[,2]/s$spec[,1]) %>% ggplot(aes(x=x,y=y)) + geom_line() + scale_y_log10() + theme_bw() + ylab("Intensity ratio") + xlab("Frequency(cycles per year)") + geom_hline(yintercept = 1e+00,lty="dashed",col = "red")  + ggtitle("Frequency response (Horizontal red lines at 1)") + geom_vline(xintercept = c(1,2,3,4,5,6), lty="dashed", col = "blue")
+```
+
+
+```{r}
+raw <- data$`Retail sales`
+low <- ts(loess(`Retail sales`~as.numeric(Period),data,span=0.5)$fitted, start=1992,frequency=12)
+hi <- ts(data$`Retail sales` - loess(data$`Retail sales`~as.numeric(data$Period),span=0.1)$fitted, start=1992,frequency=12)
+cycles <- raw - hi - low
+plot(ts.union(raw, low,hi,cycles),
+  main="Decomposition of retail sales as trend + noise + cycles")
+increase_rate = (low[340]-low[1])/(2020-1992)
+print(increase_rate)
+plot(hi[1:25],type = "l", main = "High frequency noise of a two-year span")
+
+```
+
+Fomr the above plot we can draw following conclusions
+
+- The low frequency plot shows us an estimate of the trend followed by the sales from 1992 to 2020. The average increase rate is `r increase_rate` billion dollars per year
+
+- The high freguency plot shows us th seasonal changes in Retail sales. When I zoom into high frequency we see a sales peak in December and also at around May and June and this pattern occurs over every year. The seasonal change have a period of one year
+
+- The middle frequency plot tells us about any long term changes is their is any. I can see that their is a steady increase from 2004 to 2008, but from around 2nd quater of 2008 retail sales begin to decline and it is not until last quater of 2009 it began to climb back. This shows the stock market crash on Sept. 29, 2008.The decline in Retail Sales partly reflects the economic downturn
+The same is happnning in the 1st quater of 2020 due to COVID-19 outbreak which is still going on. The decline in Retail Sales shows people refain from spending and shows the lockdown situation of the country
+
+# MODELING
+From EDA we see both trend and seasonality in data
+
+we can see a seasonal period of 12 on the retail sales data. A SARMA model with period equal to 12 can be used.
+
+## DEtrending the Data
+```{r}
+lmod <- lm(`Retail sales ad` ~ Period, data_ad)
+summary(lmod)
+```
+```{r}
+new <- data.frame(Time = data_ad$Period, Retail_sales = data_ad$`Retail sales ad`, Fitted = lmod$fitted.values) 
+new %>% ggplot() + 
+  geom_line(aes(Time,Retail_sales)) + 
+  geom_line(aes(Time,Fitted),col = "blue") + 
+  theme_bw() + ggtitle("Retail sales (seasonally adjusted)")
+new$detrend <- lmod$residuals
+```
+The linear fit looks good except for the severe economic crisis around 2008 and the latest COVID-19 outbreak
+
+## SARMA MODEL 
+```{r}
+aic_table <- function(data,P,Q,s,a){
+  table <- matrix(NA,(P+1),(Q+1))
+  for(p in 0:P) {
+    for(q in 0:Q) {
+       table[p+1,q+1] <- arima(data, order=c(p,0,q), seasonal=list(order=c(s,0,a),period=12), 
+              method="ML", optim.method = "Nelder-Mead")$aic
+    }
+  }
+  dimnames(table) <- list(paste("AR",0:P, sep=""),paste("MA",0:Q,sep=""))
+  table
+}
+```
+### SARMA(p,q)$\times(1,0)_{12}$  model
+
+```{r}
+table1<-aic_table(new$detrend,5,5,1,0) 
+require(knitr) 
+kable(table1,digits=2)
+```
+
+- here is the ACF of the residuals and the output. From the plot, there is significant autocorrelation at lag 16 and 24
+- The standard errot of the model is high espacially for the intercept
+
+```{r}
+sarima <- arima(new$detrend, order=c(3,0,2), seasonal=list(order=c(1,0,0),period=12), method="ML")
+new$sarima_fit <- new$detrend - sarima$residuals
+#new %>% ggplot() + geom_line(aes(Time,detrend)) + geom_line(aes(Time,sarima_fit),col = "red") + theme_bw() +ggtitle("Retail sales (seasonally adjusted) Simulation") 
+acf(sarima$residuals, main = "Residuals of the SAMRA(3,2)*(1,0)_12")
+sarima
+```
+
+### 3.2.2 SARMA(p,q)$\times (1,1)_{12}$  model
+Using SARMA(p,q)$\times (1,1)_{12}$ model to deal with the above problems
+
+```{r}
+table2<-aic_table(new$detrend,3,3,1,1) 
+kable(table2,digits=2)
+```
+
+- There is a significant reduction in the residual autocorrelation at lag = 16 & 24.
+- Their is reduction in standard error of the model but the error of  intercept is still high
+
+```{r}
+sarima1 <- arima(new$detrend, order=c(3,0,2), seasonal=list(order=c(1,0,1),period=12), method="ML")
+new$sarima1_fit <- new$detrend - sarima1$residuals
+#new %>% ggplot() + geom_line(aes(Time,detrend)) + geom_line(aes(Time,sarima1_fit),col = "red") + theme_bw() +ggtitle("Retail sales (seasonally adjusted) Simulation") 
+acf(sarima1$residuals, main = "Residuals of the SAMRA(3,2)*(1,1)_12")
+sarima1
+```
+```{r}
+par(mfrow=c(1,2))
+qqnorm(sarima1$residuals)
+qqline(sarima1$residuals, probs = c(0.05,0.95))
+plot(sarima1$residuals,type = "p", ylab = "Residual", main = "Residual Plot")
+abline(a=0,b=0,col="red")
+```
+
+-The QQ plot shows only some points at the end deviate from the main line other than that the main line follows normal distribution.
+
+-From the residual plot:-
+
+    a. we can see there are a few influential points at position 200 and 300.
+    b. outliers at position 120 & 350.
+    c. some heteroscedasticity.
+
+### SARMA(p,q)$\times (1,1)_{12}$  model on the log transformed data
+since trend doesn’t change through the log transformation we can transform the the above linear model.
+```{r}
+new_log =  data.frame(Time = data_ad$Period, Retail_sales = data_ad$`Retail sales ad`, logRetal_sales = log(data_ad$`Retail sales ad`))
+new_log$Fitted = log(new$Fitted)
+new_log$detrend = new_log$logRetal_sales - new_log$Fitted
+new_log %>% ggplot() + 
+  geom_line(aes(Time,logRetal_sales)) + 
+  geom_line(aes(Time,Fitted),col = "blue") + 
+  theme_bw() + ggtitle("Log retail sales (seasonally adjusted)") +
+  ylab("Log(Retail sales)")
+```
+
+```{r}
+aic_table2 <- function(data,P,Q,s,a){
+  table <- matrix(NA,(P+1),(Q+1))
+  for(p in 0:P) {
+    for(q in 0:Q) {
+       table[p+1,q+1] <- arima(data, order=c(p,0,q), seasonal=list(order=c(s,0,a),period=12))$aic
+    }
+  }
+  dimnames(table) <- list(paste("AR",0:P, sep=""),paste("MA",0:Q,sep=""))
+  table
+}
+```
+```{r}
+table3<-aic_table2(new_log$detrend,3,3,1,1) 
+kable(table3,digits=2)
+sarima2 <- arima(new_log$detrend, order=c(2,0,2), seasonal=list(order=c(1,0,0),period=12), method="ML")
+new_log$sarima2_fit <- new_log$detrend - sarima2$residuals
+new_log %>% ggplot() + 
+  geom_line(aes(Time,detrend)) + 
+  geom_line(aes(Time,sarima2_fit),col = "red") + 
+  theme_bw() +
+  ggtitle("Retail sales (seasonally adjusted) Simulation") 
+acf(sarima2$residuals)
+sarima2
+```
+## SARMA(p,q)$\times(1,1)_{12}$ model
+
+```{r}
+table3<-aic_table2(new_log$detrend,3,3,1,1)
+kable(table3,digits=2)
+sarima3 <- arima(new_log$detrend, order=c(2,0,2), seasonal=list(order=c(1,0,1),period=12))
+new_log$sarima3_fit <- new_log$detrend - sarima3$residuals
+sarima3
+```
+
+comparing with the model fitted on non transformed data the standard error has significantly decreased
+
+The ACF doesn’t show significant autocorrelation among residuals.
+```{r}
+acf(sarima3$residuals, main = "Residuals of the SAMRA(2,2)*(1,1)_12")
+```
+
+The red cure if from the model  SARMA(p,q)$\times (1,1)_{12}$, which is very comparable to the original data which is shown by black line
+
+```{r}
+new_log %>% ggplot() + 
+  geom_line(aes(Time,detrend)) + 
+  geom_line(aes(Time,sarima3_fit),col = "red") + 
+  theme_bw() +
+  ggtitle("Retail sales (seasonally adjusted) Simulation") 
+```
+
+```{r}
+par(mfrow = c(1,2))
+qqnorm(sarima3$residuals)
+qqline(sarima3$residuals,probs = c(0.05,0.95))
+plot(sarima3$residuals,type = "p",ylab = "Residual", main = "Residual Plot")
+abline(a=0,b=0,col="red")
+```
+
+-These polt shows residuals points are now better at following normal distribution.
+
+-The transformation does deal with the problem of the heteroscedasticity.
